@@ -1,0 +1,42 @@
+{
+  "main": {
+    "chain_rpc_url": "https://mainnet-1.rpc.banelabs.org",
+    "supra_rpc_url": "mainnet-dora-2.supra.com:443",
+    "pull_oracle_address": "0x8B506d2616671b6742b968C18bEFdA1e665A9025",
+    "delay_multiplier": 3,
+    "block_sample_size": 100,
+    "chain_type": "evm",
+    "oracles": [
+      {
+        "pair": "NEO_USDT",
+        "price_index": 44,
+        "resolution": 60000
+      },
+      {
+        "pair": "GAS_USDT",
+        "price_index": 260,
+        "resolution": 60000
+      }
+    ]
+  },
+  "testnet": {
+    "chain_rpc_url": "https://neoxt4seed1.ngd.network",
+    "supra_rpc_url": "testnet-dora-2.supra.com:443",
+    "pull_oracle_address": "0xc99c8510D9FF355CD664F9412bdD645c5e25a7f1",
+    "delay_multiplier": 1,
+    "block_sample_size": 100,
+    "chain_type": "evm",
+    "oracles": [
+      {
+        "pair": "NEO_USDT",
+        "price_index": 44,
+        "resolution": 60000
+      },
+      {
+        "pair": "GAS_USDT",
+        "price_index": 260,
+        "resolution": 60000
+      }
+    ]
+  }
+}
