@@ -3,7 +3,7 @@
     "chain_rpc_url": "https://mainnet-1.rpc.banelabs.org",
     "supra_rpc_url": "mainnet-dora-2.supra.com:443",
     "pull_oracle_address": "0x8B506d2616671b6742b968C18bEFdA1e665A9025",
-    "delay_multiplier": 3,
+    "delay_multiplier": 5,
     "block_sample_size": 100,
     "chain_type": "evm",
     "oracles": [

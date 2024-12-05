@@ -10,41 +10,60 @@ const contractAbi = require('../../resources/abi.json'); // Path of your smart c
 const MILLISECOND_CONVERSION_FACTOR = 1000;
 const TESTNET = 'testnet';
 const MAINNET = 'main';
+const DEBUG = process.env.DEBUG || false;
 
 // Load network related configuration such as rpc url, contract address, etc.
 const { web3, config } = loadConfig(process.env.NETWORK || 'testnet');
 const SAMPLE_SIZE = config.block_sample_size || 100; // number of block to sample for average block time
 
-// TODO: implement logic to batch proof request by resolution
+const oraclesData = new Map(); // map of oracle spec and data
+let oracleIndexesArr = []; // sorted array of oracle indexs
 
+main();
 async function main() {
-  const pairIndexes = [44, 260]; // Set the pair indexes as an array
+  try {
+    console.log('config', config);
+    const client = new PullServiceClient(config.supra_rpc_url);
 
-  console.log('config', config);
-  const client = new PullServiceClient(config.supra_rpc_url);
+    while (true) {
+      const { currentTime, averageBlockTime } = await getCurrentAndAverageBlockTime(web3);
 
-  const request = {
-    pair_indexes: pairIndexes,
-    chain_type: config.chain_type,
-  };
+      const pairIndexes = filterPriceIndexesToUpdate(currentTime);
 
-  console.log('Requesting proof for price index : ', request.pair_indexes);
-  client.getProof(request, (err, response) => {
-    if (err) {
-      console.error('Error:', err.details);
-      return;
+      const request = {
+        pair_indexes: pairIndexes,
+        chain_type: config.chain_type,
+      };
+
+      console.log('Requesting proof for price index : ', request.pair_indexes);
+      client.getProof(request, (err, response) => {
+        if (err) {
+          console.error('Error:', err.details);
+          return;
+        }
+
+        // Becayse of the slow block time the proof is deemed to be in the future during verification
+        verifyProofandPublish(response.evm, currentTime, averageBlockTime);
+
+        // update the last updated time for the oracles
+        pairIndexes.forEach((index) => {
+          oraclesData.get(index).lastUpdated = currentTime;
+        });
+      });
     }
-
-    // Becayse of the slow block time the proof is deemed to be in the future during verification
-    verifyProofandPublish(response.evm);
-  });
+  } catch (e) {
+    console.error('Error:', e);
+    process.exit(1);
+  }
 }
 
-async function verifyProofandPublish(response) {
+async function verifyProofandPublish(response, currentTime, averageBlockTime) {
   console.log('Calling pull contract to verify the proofs...');
   const hex = web3.utils.bytesToHex(response.proof_bytes);
 
   const contract = new web3.eth.Contract(contractAbi, config.pull_oracle_address);
+  contract.handleRevert = true;
+
   const DELTA_ALLOWANCE = Number(await contract.methods.TIME_DELTA_ALLOWANCE().call());
 
   // Utility code to deserialise the oracle proof bytes (Optional)
@@ -74,16 +93,19 @@ async function verifyProofandPublish(response) {
     }
   }
 
+  if (pairId.length === 0) {
+    console.log('No proof data found');
+    return;
+  }
+
   console.log('Pair index : ', pairId);
   console.log('Pair Price : ', pairPrice);
   console.log('Pair Decimal : ', pairDecimal);
   console.log('Pair Timestamp : ', pairTimestamp);
   console.log('Pair Round : ', pairRound);
 
-  // sending proof for verification
-  const { currentTime, averageBlockTime } = await getCurrentAndAverageBlockTime(web3);
-  let DELAY = averageBlockTime * Number(config.delay_multiplier);
   // calculate max future time for the proof to be valid
+  let DELAY = averageBlockTime * Number(config.delay_multiplier);
   const maxFutureTime = currentTime + DELTA_ALLOWANCE;
   if (maxFutureTime < pairTimestamp[0].round) {
     DELAY = Math.max(DELAY, pairTimestamp[0].round - maxFutureTime);
@@ -91,41 +113,49 @@ async function verifyProofandPublish(response) {
 
   console.log(`Waiting for proof to be valid in ${DELAY}ms ...`);
   setTimeout(async () => {
-    console.log('Verifying the oracle proof...');
-
-    const txData = contract.methods.verifyOracleProof(hex).encodeABI();
-    console.log('Proof verified');
-
-    const gasEstimate = await contract.methods
-      .verifyOracleProof(hex)
-      .estimateGas({ from: web3.eth.wallet.get(0).address });
-    console.log('gas estimate:', gasEstimate);
-
-    // Create the transaction object
-    const transactionObject = {
-      from: web3.eth.wallet.get(0).address,
-      to: contract.address,
-      data: txData,
-      gas: gasEstimate,
-      gasPrice: await web3.eth.getGasPrice(),
-    };
-
-    // Sign the transaction with the private key
-    const signedTransaction = await web3.eth.accounts.signTransaction(
-      transactionObject,
-      web3.eth.wallet.get(0).privateKey
-    );
-
-    // Send the signed transaction
-    const receipt = await web3.eth.sendSignedTransaction(signedTransaction.rawTransaction, null, {
-      checkRevertBeforeSending: false,
-    });
-
-    console.log('Transaction receipt:', receipt);
+    sendProofToPullContract(contract, hex);
   }, DELAY);
 }
 
-main();
+async function sendProofToPullContract(contract, hex) {
+  console.log('Verifying the oracle proof...');
+
+  const gasEstimate = await contract.methods
+    .verifyOracleProof(hex)
+    .estimateGas({ from: web3.eth.wallet.get(0).address });
+  console.log('gas estimate:', gasEstimate);
+
+  // const txData = contract.methods.verifyOracleProof(hex).encodeABI();
+  const txData = await contract.methods.verifyOracleProof(hex).send({
+    from: web3.eth.wallet.get(0).address,
+    gas: gasEstimate,
+    gasPrice: await web3.eth.getGasPrice(),
+  });
+  console.log('Transaction receipt:', txData);
+
+  // Legacy tx sending
+  // // Create the transaction object
+  // const transactionObject = {
+  //   from: web3.eth.wallet.get(0).address,
+  //   to: contract.address,
+  //   data: txData,
+  //   gas: gasEstimate,
+  //   gasPrice: await web3.eth.getGasPrice(),
+  // };
+
+  // // Sign the transaction with the private key
+  // const signedTransaction = await web3.eth.accounts.signTransaction(
+  //   transactionObject,
+  //   web3.eth.wallet.get(0).privateKey
+  // );
+
+  // // Send the signed transaction
+  // const receipt = await web3.eth.sendSignedTransaction(signedTransaction.rawTransaction, null, {
+  //   checkRevertBeforeSending: false,
+  // });
+
+  // console.log('Transaction receipt:', receipt);
+}
 
 // get the current block time and average block time within a sample size
 async function getCurrentAndAverageBlockTime(web3) {
@@ -176,4 +206,41 @@ function loadConfig(network) {
   console.log('Using wallet address', web3.eth.wallet.get(0).address);
 
   return { web3, config };
+}
+
+// initialize a map of oracle data and price indexes
+// filters the price indexes to update based on the last updated time and resolution
+// all time is calculated in ms
+function filterPriceIndexesToUpdate(currentTime) {
+  if (oracleIndexesArr.length == 0) {
+    config.oracles.map((spec) => {
+      const o = {
+        pair: spec.pair,
+        priceIndex: spec.price_index,
+        resolution: spec.resolution,
+        lastUpdated: 0,
+      };
+
+      oraclesData.set(o.priceIndex, o);
+      oracleIndexesArr.push(o.priceIndex);
+    });
+
+    oracleIndexesArr.sort((a, b) => oraclesData.get(a).resolution - oraclesData.get(b).resolution);
+  }
+
+  console.log(oracleIndexesArr);
+  const indexesToUpdate = [];
+  for (let i = 0; i < oracleIndexesArr.length; i++) {
+    const oracle = oraclesData.get(oracleIndexesArr[i]);
+
+    console.log(`checking index ${oracle.priceIndex}`);
+    if (currentTime - oracle.lastUpdated < oracle.resolution) {
+      // oracles is sorted by resolution, so we can break early as the lower resolutions will need to be updated
+      // before the higher resolutions
+      break;
+    }
+    indexesToUpdate.push(Number(oracle.priceIndex));
+  }
+
+  return indexesToUpdate;
 }
