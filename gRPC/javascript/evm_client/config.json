@@ -10,12 +10,12 @@
       {
         "pair": "NEO_USDT",
         "price_index": 44,
-        "resolution": 60000
+        "resolution": 300000
       },
       {
         "pair": "GAS_USDT",
         "price_index": 260,
-        "resolution": 60000
+        "resolution": 300000
       }
     ]
   },

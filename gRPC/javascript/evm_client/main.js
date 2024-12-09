@@ -11,6 +11,7 @@ const MILLISECOND_CONVERSION_FACTOR = 1000;
 const TESTNET = 'testnet';
 const MAINNET = 'main';
 const DEBUG = process.env.DEBUG || false;
+const INTERVAL = process.env.INTERVAL || 600000;
 
 // Load network related configuration such as rpc url, contract address, etc.
 const { web3, config } = loadConfig(process.env.NETWORK || 'testnet');
@@ -25,7 +26,7 @@ async function main() {
     console.log('config', config);
     const client = new PullServiceClient(config.supra_rpc_url);
 
-    while (true) {
+    setInterval(async () => {
       const { currentTime, averageBlockTime } = await getCurrentAndAverageBlockTime(web3);
 
       const pairIndexes = filterPriceIndexesToUpdate(currentTime);
@@ -36,24 +37,27 @@ async function main() {
       };
 
       console.log('Requesting proof for price index : ', request.pair_indexes);
-      client.getProof(request, (err, response) => {
+      client.getProof(request, async (err, response) => {
         if (err) {
           console.error('Error:', err.details);
           return;
         }
 
         // Becayse of the slow block time the proof is deemed to be in the future during verification
-        verifyProofandPublish(response.evm, currentTime, averageBlockTime);
+        const err1 = await verifyProofandPublish(response.evm, currentTime, averageBlockTime);
+        if (err1) {
+          console.error('Error:', err1);
+          return;
+        }
 
         // update the last updated time for the oracles
         pairIndexes.forEach((index) => {
           oraclesData.get(index).lastUpdated = currentTime;
         });
       });
-    }
+    }, INTERVAL);
   } catch (e) {
     console.error('Error:', e);
-    process.exit(1);
   }
 }
 
@@ -95,7 +99,7 @@ async function verifyProofandPublish(response, currentTime, averageBlockTime) {
 
   if (pairId.length === 0) {
     console.log('No proof data found');
-    return;
+    return new Error('No proof data found');
   }
 
   console.log('Pair index : ', pairId);
@@ -114,6 +118,20 @@ async function verifyProofandPublish(response, currentTime, averageBlockTime) {
   console.log(`Waiting for proof to be valid in ${DELAY}ms ...`);
   setTimeout(async () => {
     sendProofToPullContract(contract, hex);
+    // console.log('Verifying the oracle proof...');
+
+    // const gasEstimate = await contract.methods
+    //   .verifyOracleProof(hex)
+    //   .estimateGas({ from: web3.eth.wallet.get(0).address });
+    // console.log('gas estimate:', gasEstimate);
+
+    // // const txData = contract.methods.verifyOracleProof(hex).encodeABI();
+    // const txData = await contract.methods.verifyOracleProof(hex).send({
+    //   from: web3.eth.wallet.get(0).address,
+    //   gas: gasEstimate,
+    //   gasPrice: await web3.eth.getGasPrice(),
+    // });
+    // console.log('Transaction receipt:', txData);
   }, DELAY);
 }
 
@@ -142,18 +160,15 @@ async function sendProofToPullContract(contract, hex) {
   //   gas: gasEstimate,
   //   gasPrice: await web3.eth.getGasPrice(),
   // };
-
   // // Sign the transaction with the private key
   // const signedTransaction = await web3.eth.accounts.signTransaction(
   //   transactionObject,
   //   web3.eth.wallet.get(0).privateKey
   // );
-
   // // Send the signed transaction
   // const receipt = await web3.eth.sendSignedTransaction(signedTransaction.rawTransaction, null, {
   //   checkRevertBeforeSending: false,
   // });
-
   // console.log('Transaction receipt:', receipt);
 }
 
@@ -211,6 +226,7 @@ function loadConfig(network) {
 // initialize a map of oracle data and price indexes
 // filters the price indexes to update based on the last updated time and resolution
 // all time is calculated in ms
+// TODO: this can be changed to check the pull oracle contract for the latest round
 function filterPriceIndexesToUpdate(currentTime) {
   if (oracleIndexesArr.length == 0) {
     config.oracles.map((spec) => {
